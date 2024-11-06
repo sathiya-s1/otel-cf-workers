@@ -241,8 +241,7 @@ export function instrumentClientFetch(
 					span.recordException(error as Exception)
 					span.setStatus({ code: SpanStatusCode.ERROR })
 					throw error
-				}
-				finally {
+				} finally {
 					span.end()
 				}
 			})
