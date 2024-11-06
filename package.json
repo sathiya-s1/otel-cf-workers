@@ -1,5 +1,5 @@
 {
-	"name": "@microlabs/otel-cf-workers",
+	"name": "@firmly/otel-cf-workers",
 	"version": "1.0.0-rc.48",
 	"main": "dist/index.js",
 	"module": "dist/index.mjs",
