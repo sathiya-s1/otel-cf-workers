@@ -39,8 +39,8 @@ const createResource = (config: ResolvedTraceConfig): Resource => {
 		'cloud.region': 'earth',
 		'faas.max_memory': 134217728,
 		'telemetry.sdk.language': 'js',
-		'telemetry.sdk.name': '@microlabs/otel-cf-workers',
-		'telemetry.sdk.version': versions['@microlabs/otel-cf-workers'],
+		'telemetry.sdk.name': '@firmly/otel-cf-workers',
+		'telemetry.sdk.version': versions['@firmly/otel-cf-workers'],
 		'telemetry.sdk.build.node_version': versions['node'],
 	}
 	const serviceResource = new Resource({
