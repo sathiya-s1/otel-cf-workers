@@ -27,8 +27,11 @@ __export(src_exports, {
   SpanImpl: () => SpanImpl,
   __unwrappedFetch: () => __unwrappedFetch,
   createSampler: () => createSampler,
+  getParentContextFromHeaders: () => getParentContextFromHeaders,
   instrument: () => instrument,
   instrumentDO: () => instrumentDO,
+  instrumentDORPC: () => instrumentDORPC,
+  instrumentSql: () => instrumentSql,
   isAlarm: () => isAlarm,
   isHeadSampled: () => isHeadSampled,
   isMessageBatch: () => isMessageBatch,
@@ -74,7 +77,7 @@ function createSampler(conf) {
 }
 
 // src/sdk.ts
-var import_api18 = require("@opentelemetry/api");
+var import_api19 = require("@opentelemetry/api");
 var import_resources = require("@opentelemetry/resources");
 
 // src/config.ts
@@ -685,7 +688,7 @@ var SpanImpl = class {
   events = [];
   links;
   resource;
-  instrumentationLibrary = { name: "@microlabs/otel-cf-workers" };
+  instrumentationLibrary = { name: "@firmly/otel-cf-workers" };
   _ended = false;
   _droppedAttributesCount = 0;
   _droppedEventsCount = 0;
@@ -1786,6 +1789,7 @@ function instrumentD1Fn(fn, dbName, operation) {
 function instrumentD1(database, dbName) {
   const dbHandler = {
     get: (target, prop, receiver) => {
+      console.log("D1 get", prop);
       const operation = String(prop);
       const fn = Reflect.get(target, prop, receiver);
       if (typeof fn === "function") {
@@ -2161,33 +2165,247 @@ function instrumentGlobalCache() {
   return _instrumentGlobalCache();
 }
 
-// src/instrumentation/scheduled.ts
+// src/instrumentation/do-rpc.ts
 var import_api17 = require("@opentelemetry/api");
 var import_semantic_conventions8 = require("@opentelemetry/semantic-conventions");
-var traceIdSymbol2 = Symbol("traceId");
-var cold_start3 = true;
-function executeScheduledHandler(scheduledFn, [controller, env, ctx]) {
-  const tracer2 = import_api17.trace.getTracer("scheduledHandler");
+var dbSystem5 = "Cloudflare DO SQLite";
+function getParentContextFromHeaders2(headers) {
+  return import_api17.propagation.extract(import_api17.context.active(), headers, {
+    get(headers2, key) {
+      return headers2.get(key) || void 0;
+    },
+    keys(headers2) {
+      return [...headers2.keys()];
+    }
+  });
+}
+function getParentContextFromRequest2(request) {
+  const workerConfig = getActiveConfig();
+  if (workerConfig === void 0) {
+    return import_api17.context.active();
+  }
+  const acceptTraceContext = typeof workerConfig.handlers.fetch.acceptTraceContext === "function" ? workerConfig.handlers.fetch.acceptTraceContext(request) : workerConfig.handlers.fetch.acceptTraceContext ?? true;
+  return acceptTraceContext ? getParentContextFromHeaders2(request.headers) : import_api17.context.active();
+}
+function spanOptions2(dbName, operation, sql) {
   const attributes = {
-    [import_semantic_conventions8.SemanticAttributes.FAAS_TRIGGER]: "timer",
-    [import_semantic_conventions8.SemanticAttributes.FAAS_COLDSTART]: cold_start3,
-    [import_semantic_conventions8.SemanticAttributes.FAAS_CRON]: controller.cron,
-    [import_semantic_conventions8.SemanticAttributes.FAAS_TIME]: new Date(controller.scheduledTime).toISOString()
+    binding_type: "DO",
+    [import_semantic_conventions8.SemanticAttributes.DB_NAME]: dbName,
+    [import_semantic_conventions8.SemanticAttributes.DB_SYSTEM]: dbSystem5,
+    [import_semantic_conventions8.SemanticAttributes.DB_OPERATION]: operation
+  };
+  if (sql) {
+    attributes[import_semantic_conventions8.SemanticAttributes.DB_STATEMENT] = sql?.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  }
+  return {
+    kind: import_api17.SpanKind.CLIENT,
+    attributes
+  };
+}
+function metaAttributes2(meta) {
+  return {
+    "db.cf.sql.rows_read": meta.rowsRead,
+    "db.cf.sql.rows_written": meta.rowsWritten
+  };
+}
+function instrumentSqlExec(fn) {
+  const tracer2 = import_api17.trace.getTracer("D1");
+  const fnHandler = {
+    apply: (target, thisArg, argArray) => {
+      const sql = argArray[0];
+      const options = spanOptions2("DO SQLite", "exec", sql);
+      return tracer2.startActiveSpan("DO SQL Exec", options, (span) => {
+        try {
+          const result = Reflect.apply(target, thisArg, argArray);
+          span.setAttributes(metaAttributes2(result));
+          span.setStatus({ code: import_api17.SpanStatusCode.OK });
+          return result;
+        } catch (error) {
+          span.recordException(error);
+          span.setStatus({ code: import_api17.SpanStatusCode.ERROR });
+          throw error;
+        } finally {
+          span.end();
+        }
+      });
+    }
+  };
+  return wrap(fn, fnHandler);
+}
+function instrumentSql(sql) {
+  const sqlHandler = {
+    get(target, prop, receiver) {
+      const result = Reflect.get(target, prop, receiver);
+      if (prop === "exec") {
+        return instrumentSqlExec(result);
+      } else {
+        return result;
+      }
+    }
+  };
+  return wrap(sql, sqlHandler);
+}
+var cold_start3 = true;
+function executeDORPCFn(anyFn, fnName, argArray, id) {
+  const tracer2 = import_api17.trace.getTracer("DO RPC");
+  const attributes = {
+    [import_semantic_conventions8.SemanticAttributes.FAAS_TRIGGER]: "rpc",
+    [import_semantic_conventions8.SemanticAttributes.FAAS_COLDSTART]: cold_start3
   };
   cold_start3 = false;
-  Object.assign(attributes, versionAttributes(env));
   const options = {
     attributes,
     kind: import_api17.SpanKind.SERVER
   };
+  const spanContext = getParentContextFromRequest2(argArray[0]?.request);
+  const namespace = argArray[1];
+  if (namespace) {
+    fnName = `${fnName}/${namespace}`;
+  }
+  const promise = tracer2.startActiveSpan(`DO RPC ${fnName}`, options, spanContext, async (span) => {
+    try {
+      const response = await anyFn(...argArray);
+      if (response.statusText) {
+        span.recordException(new Error(response.statusText));
+        span.setStatus({ code: import_api17.SpanStatusCode.ERROR });
+      } else {
+        span.setStatus({ code: import_api17.SpanStatusCode.OK });
+      }
+      span.setAttribute("do.id", id.toString());
+      span.setAttribute("do.fn", fnName);
+      span.end();
+      return response;
+    } catch (error) {
+      span.recordException(error);
+      span.setStatus({ code: import_api17.SpanStatusCode.ERROR });
+      span.end();
+      throw error;
+    }
+  });
+  return promise;
+}
+function executeDOAlarm2(alarmFn, id) {
+  const tracer2 = import_api17.trace.getTracer("DO alarmHandler");
+  const name = id.name || "";
+  const promise = tracer2.startActiveSpan(`Durable Object Alarm ${name}`, async (span) => {
+    span.setAttribute(import_semantic_conventions8.SemanticAttributes.FAAS_COLDSTART, cold_start3);
+    cold_start3 = false;
+    span.setAttribute("do.id", id.toString());
+    if (id.name) span.setAttribute("do.name", id.name);
+    try {
+      await alarmFn();
+      span.end();
+    } catch (error) {
+      span.recordException(error);
+      span.setStatus({ code: import_api17.SpanStatusCode.ERROR });
+      span.end();
+      throw error;
+    }
+  });
+  return promise;
+}
+function instrumentDORPCFn(anyFn, fnName, initialiser, env, id) {
+  const fetchHandler = {
+    async apply(target, thisArg, argArray) {
+      const request = argArray[0]?.request;
+      const config = initialiser(env, request);
+      const context3 = setConfig(config);
+      try {
+        const bound = target.bind(unwrap(thisArg));
+        let response = await import_api17.context.with(context3, executeDORPCFn, void 0, bound, fnName, argArray, id);
+        return response;
+      } catch (error) {
+        throw error;
+      } finally {
+        exportSpans();
+      }
+    }
+  };
+  return wrap(anyFn, fetchHandler);
+}
+function instrumentAlarmFn2(alarmFn, initialiser, env, id) {
+  if (!alarmFn) return void 0;
+  const alarmHandler = {
+    async apply(target, thisArg) {
+      const config = initialiser(env, "do-alarm");
+      const context3 = setConfig(config);
+      try {
+        const bound = target.bind(unwrap(thisArg));
+        return await import_api17.context.with(context3, executeDOAlarm2, void 0, bound, id);
+      } catch (error) {
+        throw error;
+      } finally {
+        exportSpans();
+      }
+    }
+  };
+  return wrap(alarmFn, alarmHandler);
+}
+function instrumentDurableObjectStub(doObj, initialiser, env, state2, rpcFunctions) {
+  const objHandler = {
+    get(target, prop) {
+      if (prop === "alarm") {
+        const alarmFn = Reflect.get(target, prop);
+        return instrumentAlarmFn2(alarmFn, initialiser, env, state2.id);
+      } else {
+        const result = Reflect.get(target, prop);
+        if (typeof result === "function" && rpcFunctions.includes(String(prop))) {
+          return instrumentDORPCFn(result, String(prop), initialiser, env, state2.id);
+        }
+        return result;
+      }
+    }
+  };
+  return wrap(doObj, objHandler);
+}
+function instrumentDOClassRPC(doClass, initialiser, rpcFunctions) {
+  const classHandler = {
+    construct(target, [orig_state, orig_env]) {
+      const trigger = {
+        id: orig_state.id.toString(),
+        name: orig_state.id.name
+      };
+      const constructorConfig = initialiser(orig_env, trigger);
+      const context3 = setConfig(constructorConfig);
+      const env = instrumentEnv(orig_env);
+      const createDO = () => {
+        orig_state.storage.sql = instrumentSql(orig_state.storage.sql);
+        return new target(orig_state, env);
+      };
+      const doObj = import_api17.context.with(context3, createDO);
+      return instrumentDurableObjectStub(doObj, initialiser, env, orig_state, rpcFunctions);
+    }
+  };
+  return wrap(doClass, classHandler);
+}
+
+// src/instrumentation/scheduled.ts
+var import_api18 = require("@opentelemetry/api");
+var import_semantic_conventions9 = require("@opentelemetry/semantic-conventions");
+var traceIdSymbol2 = Symbol("traceId");
+var cold_start4 = true;
+function executeScheduledHandler(scheduledFn, [controller, env, ctx]) {
+  const tracer2 = import_api18.trace.getTracer("scheduledHandler");
+  const attributes = {
+    [import_semantic_conventions9.SemanticAttributes.FAAS_TRIGGER]: "timer",
+    [import_semantic_conventions9.SemanticAttributes.FAAS_COLDSTART]: cold_start4,
+    [import_semantic_conventions9.SemanticAttributes.FAAS_CRON]: controller.cron,
+    [import_semantic_conventions9.SemanticAttributes.FAAS_TIME]: new Date(controller.scheduledTime).toISOString()
+  };
+  cold_start4 = false;
+  Object.assign(attributes, versionAttributes(env));
+  const options = {
+    attributes,
+    kind: import_api18.SpanKind.SERVER
+  };
   const promise = tracer2.startActiveSpan(`scheduledHandler ${controller.cron}`, options, async (span) => {
     const traceId = span.spanContext().traceId;
-    import_api17.context.active().setValue(traceIdSymbol2, traceId);
+    import_api18.context.active().setValue(traceIdSymbol2, traceId);
     try {
       await scheduledFn(controller, env, ctx);
     } catch (error) {
       span.recordException(error);
-      span.setStatus({ code: import_api17.SpanStatusCode.ERROR });
+      span.setStatus({ code: import_api18.SpanStatusCode.ERROR });
       throw error;
     } finally {
       span.end();
@@ -2205,7 +2423,7 @@ function createScheduledHandler(scheduledFn, initialiser) {
       const context3 = setConfig(config);
       try {
         const args = [controller, env, ctx];
-        return await import_api17.context.with(context3, executeScheduledHandler, void 0, target, args);
+        return await import_api18.context.with(context3, executeScheduledHandler, void 0, target, args);
       } catch (error) {
         throw error;
       } finally {
@@ -2217,7 +2435,7 @@ function createScheduledHandler(scheduledFn, initialiser) {
 }
 
 // versions.json
-var _microlabs_otel_cf_workers = "1.0.0-rc.48";
+var _firmly_otel_cf_workers = "1.0.0-rc.49";
 var node = "20.18.0";
 
 // src/sdk.ts
@@ -2237,8 +2455,8 @@ var createResource = (config) => {
     "cloud.region": "earth",
     "faas.max_memory": 134217728,
     "telemetry.sdk.language": "js",
-    "telemetry.sdk.name": "@microlabs/otel-cf-workers",
-    "telemetry.sdk.version": _microlabs_otel_cf_workers,
+    "telemetry.sdk.name": "@firmly/otel-cf-workers",
+    "telemetry.sdk.version": _firmly_otel_cf_workers,
     "telemetry.sdk.build.node_version": node
   };
   const serviceResource = new import_resources.Resource({
@@ -2258,7 +2476,7 @@ function init(config) {
     if (config.instrumentation.instrumentGlobalFetch) {
       instrumentGlobalFetch();
     }
-    import_api18.propagation.setGlobalPropagator(config.propagator);
+    import_api19.propagation.setGlobalPropagator(config.propagator);
     const resource = createResource(config);
     const provider = new WorkerTracerProvider(config.spanProcessors, resource);
     provider.register();
@@ -2299,6 +2517,10 @@ function instrument(handler, config) {
 function instrumentDO(doClass, config) {
   const initialiser = createInitialiser(config);
   return instrumentDOClass(doClass, initialiser);
+}
+function instrumentDORPC(doClass, config, rpcFunctions) {
+  const initialiser = createInitialiser(config);
+  return instrumentDOClassRPC(doClass, initialiser, rpcFunctions);
 }
 var __unwrappedFetch = unwrap(fetch);
 
@@ -2353,8 +2575,11 @@ var MultiSpanExporterAsync = class {
   SpanImpl,
   __unwrappedFetch,
   createSampler,
+  getParentContextFromHeaders,
   instrument,
   instrumentDO,
+  instrumentDORPC,
+  instrumentSql,
   isAlarm,
   isHeadSampled,
   isMessageBatch,

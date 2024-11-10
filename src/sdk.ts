@@ -9,13 +9,18 @@ import { createFetchHandler, instrumentGlobalFetch } from './instrumentation/fet
 import { instrumentGlobalCache } from './instrumentation/cache.js'
 import { createQueueHandler } from './instrumentation/queue.js'
 import { DOClass, instrumentDOClass } from './instrumentation/do.js'
+import { instrumentDOClassRPC } from './instrumentation/do-rpc.js'
 import { createScheduledHandler } from './instrumentation/scheduled.js'
+
 //@ts-ignore
 import * as versions from '../versions.json'
 
 type FetchHandler = ExportedHandlerFetchHandler<unknown, unknown>
 type ScheduledHandler = ExportedHandlerScheduledHandler<unknown>
 type QueueHandler = ExportedHandlerQueueHandler
+
+export { instrumentSql } from './instrumentation/do-rpc.js'
+export { getParentContextFromHeaders } from './instrumentation/fetch.js'
 
 export type ResolveConfigFn<Env = any> = (env: Env, trigger: Trigger) => TraceConfig
 export type ConfigurationOption = TraceConfig | ResolveConfigFn
@@ -113,6 +118,12 @@ export function instrumentDO(doClass: DOClass, config: ConfigurationOption) {
 	const initialiser = createInitialiser(config)
 
 	return instrumentDOClass(doClass, initialiser)
+}
+
+export function instrumentDORPC(doClass: DOClass, config: ConfigurationOption, rpcFunctions: string[]) {
+	const initialiser = createInitialiser(config)
+
+	return instrumentDOClassRPC(doClass, initialiser, rpcFunctions)
 }
 
 export { waitUntilTrace } from './instrumentation/fetch.js'
