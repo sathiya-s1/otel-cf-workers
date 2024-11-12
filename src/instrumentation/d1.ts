@@ -145,6 +145,7 @@ export function instrumentD1Fn(fn: Function, dbName: string, operation: string) 
 export function instrumentD1(database: D1Database, dbName: string): D1Database {
 	const dbHandler: ProxyHandler<D1Database> = {
 		get: (target, prop, receiver) => {
+			console.log('D1 get', prop)
 			const operation = String(prop)
 			const fn = Reflect.get(target, prop, receiver)
 			if (typeof fn === 'function') {

@@ -1,5 +1,5 @@
 import { SpanExporter, ReadableSpan, Sampler, SpanProcessor, TimedEvent } from '@opentelemetry/sdk-trace-base';
-import { TextMapPropagator, Span, SpanKind, Attributes, SpanStatus, HrTime, Link, SpanContext, AttributeValue, TimeInput, Exception, Context } from '@opentelemetry/api';
+import { Context, TextMapPropagator, Span, SpanKind, Attributes, SpanStatus, HrTime, Link, SpanContext, AttributeValue, TimeInput, Exception } from '@opentelemetry/api';
 import { OTLPExporterError } from '@opentelemetry/otlp-exporter-base';
 import { ExportResult, InstrumentationLibrary } from '@opentelemetry/core';
 import { IResource } from '@opentelemetry/resources';
@@ -31,6 +31,7 @@ interface FetchHandlerConfig {
      */
     acceptTraceContext?: boolean | AcceptTraceContextFn;
 }
+declare function getParentContextFromHeaders(headers: Headers): Context;
 declare function waitUntilTrace(fn: () => Promise<any>): Promise<void>;
 
 type PostProcessorFn = (spans: ReadableSpan[]) => ReadableSpan[];
@@ -99,6 +100,11 @@ declare const isHeadSampled: TailSampleFn;
 declare const isRootErrorSpan: TailSampleFn;
 declare function createSampler(conf: ParentRatioSamplingConfig): Sampler;
 
+declare function instrumentSql(sql: SqlStorage): SqlStorage;
+type DOClass$1 = {
+    new (state: DurableObjectState, env: any): DurableObject;
+};
+
 type DOClass = {
     new (state: DurableObjectState, env: any): DurableObject;
 };
@@ -110,6 +116,7 @@ declare function isMessageBatch(trigger: Trigger): trigger is MessageBatch;
 declare function isAlarm(trigger: Trigger): trigger is 'do-alarm';
 declare function instrument<E, Q, C>(handler: ExportedHandler<E, Q, C>, config: ConfigurationOption): ExportedHandler<E, Q, C>;
 declare function instrumentDO(doClass: DOClass, config: ConfigurationOption): DOClass;
+declare function instrumentDORPC(doClass: DOClass, config: ConfigurationOption, rpcFunctions: string[]): DOClass$1;
 
 declare const __unwrappedFetch: typeof fetch;
 
@@ -192,4 +199,4 @@ declare class BatchTraceSpanProcessor implements SpanProcessor {
 
 declare function withNextSpan(attrs: Attributes): void;
 
-export { BatchTraceSpanProcessor, type ConfigurationOption, type DOConstructorTrigger, type ExporterConfig, type HandlerConfig, type InstrumentationOptions, type LocalTrace, MultiSpanExporter, MultiSpanExporterAsync, OTLPExporter, type OTLPExporterConfig, type ParentRatioSamplingConfig, type PostProcessorFn, type ResolveConfigFn, type ResolvedTraceConfig, type SamplingConfig, type ServiceConfig, SpanImpl, type TailSampleFn, type TraceConfig, type Trigger, __unwrappedFetch, createSampler, instrument, instrumentDO, isAlarm, isHeadSampled, isMessageBatch, isRequest, isRootErrorSpan, isSpanProcessorConfig, multiTailSampler, waitUntilTrace, withNextSpan };
+export { BatchTraceSpanProcessor, type ConfigurationOption, type DOConstructorTrigger, type ExporterConfig, type HandlerConfig, type InstrumentationOptions, type LocalTrace, MultiSpanExporter, MultiSpanExporterAsync, OTLPExporter, type OTLPExporterConfig, type ParentRatioSamplingConfig, type PostProcessorFn, type ResolveConfigFn, type ResolvedTraceConfig, type SamplingConfig, type ServiceConfig, SpanImpl, type TailSampleFn, type TraceConfig, type Trigger, __unwrappedFetch, createSampler, getParentContextFromHeaders, instrument, instrumentDO, instrumentDORPC, instrumentSql, isAlarm, isHeadSampled, isMessageBatch, isRequest, isRootErrorSpan, isSpanProcessorConfig, multiTailSampler, waitUntilTrace, withNextSpan };
