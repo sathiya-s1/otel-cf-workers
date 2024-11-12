@@ -2160,7 +2160,7 @@ function getParentContextFromRequest2(request) {
     return api_context5.active();
   }
   const acceptTraceContext = typeof workerConfig.handlers.fetch.acceptTraceContext === "function" ? workerConfig.handlers.fetch.acceptTraceContext(request) : workerConfig.handlers.fetch.acceptTraceContext ?? true;
-  return acceptTraceContext ? getParentContextFromHeaders2(request.headers) : api_context5.active();
+  return acceptTraceContext ? getParentContextFromHeaders2(request?.headers) : api_context5.active();
 }
 function spanOptions2(dbName, operation, sql) {
   const attributes = {
@@ -2179,8 +2179,13 @@ function spanOptions2(dbName, operation, sql) {
 }
 function metaAttributes2(meta) {
   return {
-    "db.cf.sql.rows_read": meta.rowsRead,
-    "db.cf.sql.rows_written": meta.rowsWritten
+    "db.cf.sql.rows_read": meta?.rowsRead,
+    "db.cf.sql.rows_written": meta?.rowsWritten
+  };
+}
+function databaseSizeAttributes(databaseSize) {
+  return {
+    "db.cf.sql.database_size": databaseSize
   };
 }
 function instrumentSqlExec(fn) {
@@ -2193,6 +2198,7 @@ function instrumentSqlExec(fn) {
         try {
           const result = Reflect.apply(target, thisArg, argArray);
           span.setAttributes(metaAttributes2(result));
+          span.setAttributes(databaseSizeAttributes(thisArg?.databaseSize));
           span.setStatus({ code: SpanStatusCode6.OK });
           return result;
         } catch (error) {
@@ -2232,22 +2238,21 @@ function executeDORPCFn(anyFn, fnName, argArray, id) {
     attributes,
     kind: SpanKind11.SERVER
   };
-  const spanContext = getParentContextFromRequest2(argArray[0]?.request);
+  let spanContext = api_context5.active();
+  let request = argArray?.[0]?.request;
+  if (request) {
+    spanContext = getParentContextFromRequest2(request);
+  }
   const namespace = argArray[1];
   if (namespace) {
     fnName = `${fnName}/${namespace}`;
   }
   const promise = tracer2.startActiveSpan(`DO RPC ${fnName}`, options, spanContext, async (span) => {
     try {
-      const response = await anyFn(...argArray);
-      if (response.statusText) {
-        span.recordException(new Error(response.statusText));
-        span.setStatus({ code: SpanStatusCode6.ERROR });
-      } else {
-        span.setStatus({ code: SpanStatusCode6.OK });
-      }
       span.setAttribute("do.id", id.toString());
       span.setAttribute("do.fn", fnName);
+      const response = await anyFn(...argArray);
+      span.setStatus({ code: SpanStatusCode6.OK });
       span.end();
       return response;
     } catch (error) {

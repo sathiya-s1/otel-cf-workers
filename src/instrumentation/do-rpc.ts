@@ -35,7 +35,7 @@ function getParentContextFromRequest(request: Request) {
 		typeof workerConfig.handlers.fetch.acceptTraceContext === 'function'
 			? workerConfig.handlers.fetch.acceptTraceContext(request)
 			: (workerConfig.handlers.fetch.acceptTraceContext ?? true)
-	return acceptTraceContext ? getParentContextFromHeaders(request.headers) : api_context.active()
+	return acceptTraceContext ? getParentContextFromHeaders(request?.headers) : api_context.active()
 }
 
 function spanOptions(dbName: string, operation: string, sql?: string): SpanOptions {
@@ -56,8 +56,14 @@ function spanOptions(dbName: string, operation: string, sql?: string): SpanOptio
 
 function metaAttributes(meta: SqlStorageIngestResult): Attributes {
 	return {
-		'db.cf.sql.rows_read': meta.rowsRead,
-		'db.cf.sql.rows_written': meta.rowsWritten
+		'db.cf.sql.rows_read': meta?.rowsRead,
+		'db.cf.sql.rows_written': meta?.rowsWritten
+	}
+}
+
+function databaseSizeAttributes(databaseSize: number): Attributes {
+	return {
+		'db.cf.sql.database_size': databaseSize
 	}
 }
 
@@ -71,6 +77,7 @@ export function instrumentSqlExec(fn: Function) {
 				try {
 					const result = Reflect.apply(target, thisArg, argArray)
 					span.setAttributes(metaAttributes((result as SqlStorageIngestResult)))
+					span.setAttributes(databaseSizeAttributes(thisArg?.databaseSize))
 					span.setStatus({ code: SpanStatusCode.OK })
 					return result
 				} catch (error) {
@@ -114,7 +121,11 @@ export function executeDORPCFn(anyFn: AnyFn, fnName: string, argArray: any[], id
 		attributes,
 		kind: SpanKind.SERVER,
 	}
-	const spanContext = getParentContextFromRequest(argArray[0]?.request)
+	let spanContext = api_context.active();
+	let request = argArray?.[0]?.request;
+	if (request) {
+		spanContext = getParentContextFromRequest(request)
+	}
 	const namespace = argArray[1];
 
 	if (namespace) {
@@ -123,16 +134,10 @@ export function executeDORPCFn(anyFn: AnyFn, fnName: string, argArray: any[], id
 
 	const promise = tracer.startActiveSpan(`DO RPC ${fnName}`, options, spanContext, async (span) => {
 		try {
-			const response: Response = await anyFn(...argArray)
-			if (response.statusText) {
-				span.recordException(new Error(response.statusText) as Exception)
-				span.setStatus({ code: SpanStatusCode.ERROR })
-			} else {
-				span.setStatus({ code: SpanStatusCode.OK })
-			}
-			// span.setAttributes(gatherResponseAttributes(response))
 			span.setAttribute('do.id', id.toString())
 			span.setAttribute('do.fn', fnName)
+			const response: Response = await anyFn(...argArray)
+			span.setStatus({ code: SpanStatusCode.OK })
 			span.end()
 			return response
 		} catch (error) {
