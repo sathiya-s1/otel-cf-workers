@@ -14,7 +14,7 @@ import { OTLPExporter } from './exporter.js'
 import { multiTailSampler, isHeadSampled, isRootErrorSpan, createSampler } from './sampling.js'
 import { BatchTraceSpanProcessor } from './spanprocessor.js'
 
-const configSymbol = Symbol('Otel Workers Tracing Configuration')
+const configSymbol = 'Otel Workers Tracing Configuration'
 
 export type Initialiser = (env: Record<string, unknown>, trigger: Trigger) => ResolvedTraceConfig
 
