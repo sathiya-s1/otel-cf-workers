@@ -2362,7 +2362,24 @@ function passthroughGet(target, prop, thisArg) {
   const value = Reflect.get(unwrappedTarget, prop);
   if (typeof value === "function") {
     if (value.constructor.name === "RpcProperty") {
-      return (...args) => unwrappedTarget[prop](...args);
+      return (...args) => {
+        const ctx = context.active();
+        let headers = {};
+        propagation.inject(ctx, headers);
+        if (typeof args[0] === "object" && args[0] !== null) {
+          args[0] = {
+            ...args[0],
+            __otel_request: {
+              ..."__otel_request" in args[0] ? args[0].__otel_request : {},
+              headers: {
+                ..."__otel_request" in args[0] && "headers" in args[0].__otel_request ? args[0].__otel_request.headers : {},
+                ...headers
+              }
+            }
+          };
+        }
+        return unwrappedTarget[prop](...args);
+      };
     }
     thisArg = thisArg || unwrappedTarget;
     return value.bind(thisArg);
@@ -3833,16 +3850,297 @@ function instrumentQueueSender(queue, name) {
   return wrap(queue, queueHandler);
 }
 
+// src/instrumentation/workflow.ts
+function addTraceHeadersToWorkflowEvent(data) {
+  const ctx = context.active();
+  let headers = {};
+  propagation.inject(ctx, headers);
+  let params = data.params || {};
+  data.params = {
+    id: data.id,
+    ...params,
+    __otel_request: {
+      ...params.__otel_request || {},
+      headers: {
+        ...params.__otel_request?.headers || {},
+        ...headers
+      }
+    }
+  };
+  return data;
+}
+function getParentContextFromHeaders2(headers) {
+  if (headers instanceof Map) {
+    return propagation.extract(context.active(), headers, {
+      get(headers2, key) {
+        return headers2.get(key) || void 0;
+      },
+      keys(headers2) {
+        return [...headers2.keys()];
+      }
+    });
+  } else {
+    return propagation.extract(context.active(), headers, {
+      get(headers2, key) {
+        return headers2[key] || void 0;
+      },
+      keys(headers2) {
+        return [...Object.keys(headers2)];
+      }
+    });
+  }
+}
+function getParentContextFromRequest(request) {
+  const workerConfig = getActiveConfig();
+  if (workerConfig === void 0) {
+    return context.active();
+  }
+  const acceptTraceContext = typeof workerConfig.handlers.fetch.acceptTraceContext === "function" ? workerConfig.handlers.fetch.acceptTraceContext(request) : workerConfig.handlers.fetch.acceptTraceContext ?? true;
+  return acceptTraceContext ? getParentContextFromHeaders2(request?.headers) : context.active();
+}
+function instrumentWorkflowStep(step, activeContext) {
+  const stepHandler = {
+    get(target, prop) {
+      const method = Reflect.get(target, prop);
+      if (typeof method !== "function") {
+        return method;
+      }
+      return new Proxy(method, {
+        apply: async (fn, thisArg, args) => {
+          const [name, ...restArgs] = args;
+          const tracer2 = trace.getTracer("Workflow");
+          switch (prop) {
+            case "do":
+              return tracer2.startActiveSpan(`Workflow Step ${name}`, {
+                attributes: {
+                  "workflow.step": "do",
+                  "workflow.step.do.name": name
+                },
+                kind: SpanKind.INTERNAL
+              }, activeContext, async (span) => {
+                let ctx = context.active();
+                try {
+                  if (typeof args[args.length - 1] === "function") {
+                    const originalCallback = args[args.length - 1];
+                    args[args.length - 1] = async (...callbackArgs) => {
+                      return context.with(ctx, () => originalCallback(...callbackArgs));
+                    };
+                  }
+                  const result = await Reflect.apply(fn, thisArg, args);
+                  span.setStatus({ code: SpanStatusCode.OK });
+                  return result;
+                } catch (error) {
+                  span.recordException(error);
+                  span.setStatus({ code: SpanStatusCode.ERROR });
+                  throw error;
+                } finally {
+                  span.end();
+                }
+              });
+            case "sleep":
+              return tracer2.startActiveSpan(`Workflow Step sleep`, {
+                attributes: {
+                  "workflow.step": "sleep",
+                  "workflow.step.sleep.name": name,
+                  "workflow.step.sleep.duration": restArgs[0]
+                },
+                kind: SpanKind.INTERNAL
+              }, activeContext, async (span) => {
+                try {
+                  await Reflect.apply(fn, thisArg, args);
+                  span.setStatus({ code: SpanStatusCode.OK });
+                } catch (error) {
+                  span.recordException(error);
+                  span.setStatus({ code: SpanStatusCode.ERROR });
+                  throw error;
+                } finally {
+                  span.end();
+                  exportSpans();
+                }
+              });
+            case "sleepUntil":
+              return tracer2.startActiveSpan(`Workflow Step sleepUntil`, {
+                attributes: {
+                  "workflow.step": "sleepUntil",
+                  "workflow.step.sleep_until.name": name,
+                  "workflow.step.sleep_until.timestamp": restArgs[0].toString()
+                },
+                kind: SpanKind.INTERNAL
+              }, activeContext, async (span) => {
+                try {
+                  await Reflect.apply(fn, thisArg, args);
+                  span.setStatus({ code: SpanStatusCode.OK });
+                } catch (error) {
+                  span.recordException(error);
+                  span.setStatus({ code: SpanStatusCode.ERROR });
+                  throw error;
+                } finally {
+                  span.end();
+                }
+              });
+            default:
+              return Reflect.apply(fn, thisArg, args);
+          }
+        }
+      });
+    }
+  };
+  return wrap(step, stepHandler);
+}
+function instrumentWorkflowRun(runFn, initialiser, env, ctx) {
+  const runHandler = {
+    async apply(target, thisArg, [event, step]) {
+      const config = initialiser(env);
+      const context2 = setConfig(config);
+      let name = event?.payload?.name || "Unknown";
+      return context.with(context2, async () => {
+        const tracer2 = trace.getTracer("Workflow");
+        let otelPropogationRequest = event?.payload?.__otel_request;
+        let activeContext = context.active();
+        if (otelPropogationRequest) {
+          activeContext = getParentContextFromRequest(otelPropogationRequest);
+        }
+        return tracer2.startActiveSpan(`Workflow Run ${name}`, {
+          attributes: {
+            "workflow.operation": "run",
+            "workflow.id": event?.id || event?.payload?.id,
+            "workflow.run.name": name
+          },
+          kind: SpanKind.CONSUMER
+        }, activeContext, async (span) => {
+          try {
+            const bound = target.bind(thisArg);
+            const instrumentedStep = instrumentWorkflowStep(step, context.active());
+            const result = await bound(event, instrumentedStep);
+            span.setStatus({ code: SpanStatusCode.OK });
+            return result;
+          } catch (error) {
+            span.recordException(error);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            throw error;
+          } finally {
+            span.end();
+            exportSpans();
+          }
+        });
+      });
+    }
+  };
+  return wrap(runFn, runHandler);
+}
+function instrumentWorkflowCreate(createFn, attrs) {
+  const createHandler = {
+    async apply(target, thisArg, [data]) {
+      const tracer2 = trace.getTracer("Workflow");
+      let name = attrs?.["name"] || "Unknown";
+      return tracer2.startActiveSpan(`Workflow Create ${name}`, {
+        attributes: {
+          "workflow.create.name": data.params?.name,
+          "workflow.operation": "create",
+          "workflow.id": data?.id
+        },
+        kind: SpanKind.CLIENT
+      }, async (span) => {
+        try {
+          const result = await Reflect.apply(
+            target,
+            thisArg,
+            [addTraceHeadersToWorkflowEvent(data)]
+          );
+          span.setStatus({ code: SpanStatusCode.OK });
+          return result;
+        } catch (error) {
+          span.recordException(error);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          throw error;
+        } finally {
+          span.end();
+          exportSpans();
+        }
+      });
+    }
+  };
+  return wrap(createFn, createHandler);
+}
+function instrumentWorkflowInstance(workflowObj, initialiser, env, ctx) {
+  const objHandler = {
+    get(target, prop) {
+      if (prop === "run") {
+        const runFn = Reflect.get(target, prop);
+        return instrumentWorkflowRun(runFn, initialiser, env, ctx);
+      } else {
+        const result = Reflect.get(target, prop);
+        if (typeof result === "function") {
+          result.bind(workflowObj);
+        }
+        return result;
+      }
+    }
+  };
+  return wrap(workflowObj, objHandler);
+}
+function instrumentWorkflowBinding(workflowObj, attrs) {
+  const objHandler = {
+    get(target, prop) {
+      const method = Reflect.get(target, prop);
+      if (typeof method !== "function") {
+        return method;
+      }
+      return new Proxy(method, {
+        apply: async (fn, thisArg, args) => {
+          switch (prop) {
+            case "create":
+              const createHandler = instrumentWorkflowCreate(fn, attrs);
+              return Reflect.apply(createHandler, thisArg, args);
+            default:
+              return Reflect.apply(fn, thisArg, args);
+          }
+        }
+      });
+    }
+  };
+  return wrap(workflowObj, objHandler);
+}
+function instrumentWorkflow(WorkflowClass, initialiser) {
+  const classHandler = {
+    construct(target, [orig_ctx, orig_env]) {
+      const constructorConfig = initialiser(orig_env);
+      const context2 = setConfig(constructorConfig);
+      const env = instrumentEnv(orig_env);
+      const createWorkflow = () => {
+        return new target(orig_ctx, env);
+      };
+      const workflowObj = context.with(context2, createWorkflow);
+      return instrumentWorkflowInstance(workflowObj, initialiser, env, orig_ctx);
+    }
+  };
+  return wrap(WorkflowClass, classHandler);
+}
+
 // src/instrumentation/service.ts
 function instrumentServiceBinding(fetcher, envName) {
   const fetcherHandler = {
     get(target, prop) {
+      const method = Reflect.get(target, prop);
       if (prop === "fetch") {
-        const fetcher2 = Reflect.get(target, prop);
         const attrs = {
           name: `Service Binding ${envName}`
         };
-        return instrumentClientFetch(fetcher2, () => ({ includeTraceContext: true }), attrs);
+        return instrumentClientFetch(method, () => ({ includeTraceContext: true }), attrs);
+      } else if (prop === "create") {
+        return new Proxy(method, {
+          apply: async (fn, thisArg, args) => {
+            switch (prop) {
+              case "create":
+                const createHandler = instrumentWorkflowCreate(fn, {
+                  name: `${String(envName)}`
+                });
+                return Reflect.apply(createHandler, thisArg, args);
+              default:
+                return Reflect.apply(fn, thisArg, args);
+            }
+          }
+        });
       } else {
         return passthroughGet(target, prop);
       }
@@ -3975,7 +4273,6 @@ function instrumentD1Fn(fn, dbName, operation) {
 function instrumentD1(database, dbName) {
   const dbHandler = {
     get: (target, prop, receiver) => {
-      console.log("D1 get", prop);
       const operation = String(prop);
       const fn = Reflect.get(target, prop, receiver);
       if (typeof fn === "function") {
@@ -4056,6 +4353,9 @@ var isDurableObject = (item) => {
 var isVersionMetadata = (item) => {
   return !isJSRPC(item) && typeof item?.id === "string" && typeof item?.tag === "string";
 };
+var isWorkflowBinding = (item) => {
+  return !isJSRPC(item) && !!item?.create;
+};
 var isAnalyticsEngineDataset = (item) => {
   return !isJSRPC(item) && !!item?.writeDataPoint;
 };
@@ -4079,6 +4379,10 @@ var instrumentEnv = (env) => {
         return instrumentDOBinding(item, String(prop));
       } else if (isVersionMetadata(item)) {
         return item;
+      } else if (isWorkflowBinding(item)) {
+        return instrumentWorkflowBinding(item, {
+          name: `${String(prop)}`
+        });
       } else if (isAnalyticsEngineDataset(item)) {
         return instrumentAnalyticsEngineDataset(item, String(prop));
       } else if (isD1Database(item)) {
@@ -4159,7 +4463,7 @@ function getParentContextFromHeaders(headers) {
     }
   });
 }
-function getParentContextFromRequest(request) {
+function getParentContextFromRequest2(request) {
   const workerConfig = getActiveConfig();
   if (workerConfig === void 0) {
     return context.active();
@@ -4176,7 +4480,7 @@ function waitUntilTrace(fn) {
 }
 var cold_start2 = true;
 function executeFetchHandler(fetchFn, [request, env, ctx]) {
-  const spanContext = getParentContextFromRequest(request);
+  const spanContext = getParentContextFromRequest2(request);
   const tracer2 = trace.getTracer("fetchHandler");
   const attributes = {
     ["faas.trigger"]: "http",
@@ -4350,23 +4654,34 @@ function instrumentGlobalCache() {
 
 // src/instrumentation/do-rpc.ts
 var dbSystem5 = "Cloudflare DO SQLite";
-function getParentContextFromHeaders2(headers) {
-  return propagation.extract(context.active(), headers, {
-    get(headers2, key) {
-      return headers2.get(key) || void 0;
-    },
-    keys(headers2) {
-      return [...headers2.keys()];
-    }
-  });
+function getParentContextFromHeaders3(headers) {
+  if (headers instanceof Map) {
+    return propagation.extract(context.active(), headers, {
+      get(headers2, key) {
+        return headers2.get(key) || void 0;
+      },
+      keys(headers2) {
+        return [...headers2.keys()];
+      }
+    });
+  } else {
+    return propagation.extract(context.active(), headers, {
+      get(headers2, key) {
+        return headers2[key] || void 0;
+      },
+      keys(headers2) {
+        return [...Object.keys(headers2)];
+      }
+    });
+  }
 }
-function getParentContextFromRequest2(request) {
+function getParentContextFromRequest3(request) {
   const workerConfig = getActiveConfig();
   if (workerConfig === void 0) {
     return context.active();
   }
   const acceptTraceContext = typeof workerConfig.handlers.fetch.acceptTraceContext === "function" ? workerConfig.handlers.fetch.acceptTraceContext(request) : workerConfig.handlers.fetch.acceptTraceContext ?? true;
-  return acceptTraceContext ? getParentContextFromHeaders2(request?.headers) : context.active();
+  return acceptTraceContext ? getParentContextFromHeaders3(request?.headers) : context.active();
 }
 function spanOptions2(dbName, operation, sql) {
   const attributes = {
@@ -4445,9 +4760,9 @@ function executeDORPCFn(anyFn, fnName, argArray, id) {
     kind: SpanKind.SERVER
   };
   let spanContext = context.active();
-  let request = argArray?.[0]?.request;
+  let request = argArray?.[0]?.request || argArray?.[0]?.__otel_request;
   if (request) {
-    spanContext = getParentContextFromRequest2(request);
+    spanContext = getParentContextFromRequest3(request);
   }
   const namespace = argArray[1];
   if (namespace) {
@@ -4619,7 +4934,7 @@ function createScheduledHandler(scheduledFn, initialiser) {
 }
 
 // versions.json
-var _firmly_otel_cf_workers = "1.0.0-rc.49";
+var _firmly_otel_cf_workers = "1.1.1";
 var node = "20.18.0";
 
 // src/sdk.ts
@@ -4706,6 +5021,10 @@ function instrumentDORPC(doClass, config, rpcFunctions) {
   const initialiser = createInitialiser(config);
   return instrumentDOClassRPC(doClass, initialiser, rpcFunctions);
 }
+function instrumentWorkflow2(workflowClass, config) {
+  const initialiser = createInitialiser(config);
+  return instrumentWorkflow(workflowClass, initialiser);
+}
 var __unwrappedFetch = unwrap(fetch);
 
 // src/multiexporter.ts
@@ -4757,18 +5076,23 @@ export {
   SpanImpl,
   SpanStatusCode,
   __unwrappedFetch,
+  context as api_context,
+  createExportTraceServiceRequest,
   createSampler,
   getParentContextFromHeaders,
   instrument,
   instrumentDO,
   instrumentDORPC,
+  instrumentEnv,
   instrumentSql,
+  instrumentWorkflow2 as instrumentWorkflow,
   isAlarm,
   isHeadSampled,
   isMessageBatch,
   isRequest,
   isRootErrorSpan,
   multiTailSampler,
+  propagation,
   trace,
   waitUntilTrace,
   withNextSpan

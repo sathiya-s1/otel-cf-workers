@@ -2,7 +2,12 @@ import { Context } from '@opentelemetry/api';
 import { Initialiser } from '../config.js';
 type AlarmFn = DurableObject['alarm'];
 type AnyFn = (...args: any[]) => any;
-export declare function getParentContextFromHeaders(headers: Headers): Context;
+/**
+ * Get the parent context from the request headers. For RPC requests there is no request object
+ * @param headers - The request headers
+ * @returns The parent context
+ */
+export declare function getParentContextFromHeaders(headers: Headers | Map<string, string> | Record<string, any>): Context;
 export declare function instrumentSqlExec(fn: Function): any;
 export declare function instrumentSql(sql: SqlStorage): SqlStorage;
 export type DOClass = {

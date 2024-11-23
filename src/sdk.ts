@@ -12,6 +12,8 @@ import { DOClass, instrumentDOClass } from './instrumentation/do.js'
 import { instrumentDOClassRPC } from './instrumentation/do-rpc.js'
 import { createScheduledHandler } from './instrumentation/scheduled.js'
 
+import { instrumentWorkflow as instrumentWorkflowObject } from './instrumentation/workflow.js'
+export { instrumentEnv } from './instrumentation/env.js'
 //@ts-ignore
 import * as versions from '../versions.json'
 
@@ -124,6 +126,12 @@ export function instrumentDORPC(doClass: DOClass, config: ConfigurationOption, r
 	const initialiser = createInitialiser(config)
 
 	return instrumentDOClassRPC(doClass, initialiser, rpcFunctions)
+}
+
+export function instrumentWorkflow(workflowClass: any, config: ConfigurationOption) {
+	const initialiser = createInitialiser(config)
+
+	return instrumentWorkflowObject(workflowClass, initialiser)
 }
 
 export { waitUntilTrace } from './instrumentation/fetch.js'

@@ -1,4 +1,6 @@
 const unwrapSymbol = Symbol('unwrap')
+import { propagation } from '@opentelemetry/api';
+import { context as api_context } from '@opentelemetry/api'
 
 type Wrapped<T> = { [unwrapSymbol]: T } & T
 
@@ -48,8 +50,29 @@ export function passthroughGet(target: any, prop: string | symbol, thisArg?: any
 	const unwrappedTarget = unwrap(target)
 	const value = Reflect.get(unwrappedTarget, prop)
 	if (typeof value === 'function') {
+		/**
+		 * Another bad hack trying to inject __otel_request for otel traceparent propogation through
+		 * RPC invocations.
+		 */
 		if (value.constructor.name === 'RpcProperty') {
-			return (...args: unknown[]) => unwrappedTarget[prop](...args)
+			return (...args: unknown[]) => {
+				const ctx = api_context.active()
+				let headers = {}
+				propagation.inject(ctx, headers);
+				if (typeof args[0] === 'object' && args[0] !== null) {
+					args[0] = {
+						...args[0] as object,
+						__otel_request: {
+							...('__otel_request' in (args[0] as object) ? (args[0] as any).__otel_request : {}),
+							headers: {
+								...('__otel_request' in (args[0] as object) && 'headers' in (args[0] as any).__otel_request ? (args[0] as any).__otel_request.headers : {}),
+								...headers
+							}
+						}
+					}
+				}
+				return unwrappedTarget[prop](...args)
+			}
 		}
 		thisArg = thisArg || unwrappedTarget
 		return value.bind(thisArg)

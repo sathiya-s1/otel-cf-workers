@@ -12,18 +12,12 @@
 				"types": "./dist/index.d.ts",
 				"default": "./dist/index.mjs"
 			}
-		},
-		"./otel-cf-workers": {
-			"import": {
-				"types": "./dist/otel-cf-workers.d.ts",
-				"default": "./dist/otel-cf-workers.mjs"
-			}
 		}
 	},
 	"scripts": {
 		"clean": "rimraf ./dist versions.json",
 		"format": "prettier --ignore-unknown --write .",
-		"build:src": "tsup src/index.ts --format cjs,esm --dts --clean --sourcemap",
+		"build:src": "tsup src/index.ts --format cjs,esm --dts --clean --sourcemap --treeshake",
 		"build:versions": "npm version --json > versions.json",
 		"build": "run-s -l build:versions build:src",
 		"bundle": "node build-scripts/build.js",
