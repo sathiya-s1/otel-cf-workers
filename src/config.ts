@@ -1,4 +1,4 @@
-import { context } from '@opentelemetry/api'
+import { context as api_context } from '@opentelemetry/api'
 import {
 	ExporterConfig,
 	isSpanProcessorConfig,
@@ -16,14 +16,18 @@ import { BatchTraceSpanProcessor } from './spanprocessor.js'
 
 const configSymbol = 'Otel Workers Tracing Configuration'
 
-export type Initialiser = (env: Record<string, unknown>, trigger: Trigger) => ResolvedTraceConfig
+export type Initialiser = (env: Record<string, unknown>, trigger?: Trigger | any) => ResolvedTraceConfig
 
-export function setConfig(config: ResolvedTraceConfig, ctx = context.active()) {
+export function getContext(ctx = api_context.active()) {
+	return ctx
+}
+
+export function setConfig(config: ResolvedTraceConfig, ctx = api_context.active()) {
 	return ctx.setValue(configSymbol, config)
 }
 
 export function getActiveConfig(): ResolvedTraceConfig | undefined {
-	const config = context.active().getValue(configSymbol) as ResolvedTraceConfig
+	const config = api_context.active().getValue(configSymbol) as ResolvedTraceConfig
 	return config || undefined
 }
 

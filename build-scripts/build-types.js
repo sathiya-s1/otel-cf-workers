@@ -3,7 +3,7 @@ import 'zx/globals'
 import { inspect } from 'util'
 import ts from 'typescript'
 
-function buildDeclarationFiles(fileNames: string[], options: ts.CompilerOptions): void {
+function buildDeclarationFiles(fileNames, options) {
 	options = {
 		...options,
 		declaration: true,
@@ -18,6 +18,5 @@ const tsconfig = ts.readConfigFile('./tsconfig.json', ts.sys.readFile)
 if (tsconfig.error) throw new Error(`failed to read tsconfig: ${inspect(tsconfig)}`)
 
 buildDeclarationFiles([
-    './src/index.ts',
-    './src/opentelemetry-api.ts'
+    './src/index.ts'
 ], tsconfig.config)

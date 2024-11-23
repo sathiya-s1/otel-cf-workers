@@ -5,11 +5,10 @@ import * as esbuild from 'esbuild'
 await fs.rm('./dist/', { force: true, recursive: true })
 
 await Promise.all([
-	$`node ./build-scripts/build-types.ts`,
+	$`node ./build-scripts/build-types.js`,
 	esbuild.build({
 		entryPoints:  [
-            './src/index.ts',
-            './src/opentelemetry-api.ts',
+            './src/index.ts'
         ],
 		outdir: './dist/',
 		logLevel: 'info',

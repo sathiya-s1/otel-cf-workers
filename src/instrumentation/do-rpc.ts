@@ -12,16 +12,31 @@ type AnyFn = (...args: any[]) => any
 
 const dbSystem = 'Cloudflare DO SQLite'
 
-
-export function getParentContextFromHeaders(headers: Headers): Context {
-	return propagation.extract(api_context.active(), headers, {
-		get(headers, key) {
+/**
+ * Get the parent context from the request headers. For RPC requests there is no request object
+ * @param headers - The request headers
+ * @returns The parent context
+ */
+export function getParentContextFromHeaders(headers: Headers | Map<string, string> | Record<string, any>): Context {
+	if (headers instanceof Map) {
+		return propagation.extract(api_context.active(), headers, {
+			get(headers, key) {
 			return headers.get(key) || undefined
 		},
 		keys(headers) {
 			return [...headers.keys()]
-		},
-	})
+			},
+		})
+	} else {
+		return propagation.extract(api_context.active(), headers as Record<string, any>, {
+			get(headers, key) {
+				return headers[key] || undefined
+			},
+			keys(headers) {
+				return [...Object.keys(headers)]
+			},
+		})
+	}
 }
 
 function getParentContextFromRequest(request: Request) {
@@ -122,7 +137,7 @@ export function executeDORPCFn(anyFn: AnyFn, fnName: string, argArray: any[], id
 		kind: SpanKind.SERVER,
 	}
 	let spanContext = api_context.active();
-	let request = argArray?.[0]?.request;
+	let request = argArray?.[0]?.request || argArray?.[0]?.__otel_request ;
 	if (request) {
 		spanContext = getParentContextFromRequest(request)
 	}

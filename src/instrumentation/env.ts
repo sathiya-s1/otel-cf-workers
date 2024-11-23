@@ -5,6 +5,7 @@ import { instrumentQueueSender } from './queue.js'
 import { instrumentServiceBinding } from './service.js'
 import { instrumentD1 } from './d1'
 import { instrumentAnalyticsEngineDataset } from './analytics-engine.js'
+import { instrumentWorkflowBinding } from './workflow.js'
 
 const isJSRPC = (item?: unknown): item is Service => {
 	// @ts-expect-error The point of RPC types is to block non-existent properties, but that's the goal here
@@ -31,6 +32,10 @@ export const isVersionMetadata = (item?: unknown): item is WorkerVersionMetadata
 	)
 }
 
+export const isWorkflowBinding = (item?: unknown): item is Workflow => {
+	return !isJSRPC(item) && !!(item as Workflow)?.create
+}
+
 const isAnalyticsEngineDataset = (item?: unknown): item is AnalyticsEngineDataset => {
 	return !isJSRPC(item) && !!(item as AnalyticsEngineDataset)?.writeDataPoint
 }
@@ -46,6 +51,18 @@ const instrumentEnv = (env: Record<string, unknown>): Record<string, unknown> =>
 			if (!isProxyable(item)) {
 				return item
 			}
+			/**
+			 * Workflows are essentially worker scripts so the .create property is a isJSRPC. The below was a bad hack, 
+			 * instead trying to see if I can simply wrap the create method in the instrumentServiceBinding option. 
+			 */
+			// if (prop.toString().toLowerCase().endsWith('_workflow')) {
+			// 	return instrumentWorkflowBinding(item, {
+			// 		name: `${String(prop)}`,
+			// 	});
+			// }
+			/**
+			 * Both fetch and workflow are instrumented here.
+			 */
 			if (isJSRPC(item)) {
 				return instrumentServiceBinding(item, String(prop))
 			} else if (isKVNamespace(item)) {
@@ -57,6 +74,13 @@ const instrumentEnv = (env: Record<string, unknown>): Record<string, unknown> =>
 			} else if (isVersionMetadata(item)) {
 				// we do not need to log accesses to the metadata
 				return item
+			} else if (isWorkflowBinding(item)) {
+				/**
+				 * Never happens. Workflow binding is done as part of the service binding.
+				 */
+				return instrumentWorkflowBinding(item, {
+					name: `${String(prop)}`,
+				})
 			} else if (isAnalyticsEngineDataset(item)) {
 				return instrumentAnalyticsEngineDataset(item, String(prop))
 			} else if (isD1Database(item)) {

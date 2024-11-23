@@ -1,4 +1,4 @@
-import { context, trace, Tracer, TracerOptions, TracerProvider } from '@opentelemetry/api'
+import { context as api_context, trace, Tracer, TracerOptions, TracerProvider } from '@opentelemetry/api'
 
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { Resource } from '@opentelemetry/resources'
@@ -33,6 +33,6 @@ export class WorkerTracerProvider implements TracerProvider {
 
 	register(): void {
 		trace.setGlobalTracerProvider(this)
-		context.setGlobalContextManager(new AsyncLocalStorageContextManager())
+		api_context.setGlobalContextManager(new AsyncLocalStorageContextManager())
 	}
 }
